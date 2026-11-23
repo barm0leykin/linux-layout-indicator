@@ -1,0 +1,20 @@
+positioning: pointer
+appearance:
+  width: 88
+  height: 44
+  corner_radius: 8.0
+  font_path: /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+  font_size: 20.0
+  text_color: '#ffffff'
+  background_color: '#1b1c1d'
+  background_alpha: 0.88
+timing:
+  fade_in_ms: 120
+  hold_ms: 700
+  fade_out_ms: 200
+offset:
+  dx: 14
+  dy: -24
+behavior:
+  suppress_fullscreen: true
+  show_on_focus: false

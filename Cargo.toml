@@ -1,0 +1,12 @@
+[package]
+name = "layout-indicator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ab_glyph = "0.2.32"
+anyhow = "1.0.105"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml_ng = "0.10.0"
+tiny-skia = "0.12.0"
+x11rb = { version = "0.14.0", features = ["shape", "xkb"] }
