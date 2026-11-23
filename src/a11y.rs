@@ -10,17 +10,20 @@
 use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use atspi::events::ObjectEvents;
+use atspi::events::object::StateChangedEvent;
 use atspi::proxy::accessible::ObjectRefExt;
 use atspi::proxy::proxy_ext::ProxyExt;
 use atspi::{AccessibilityConnection, CoordType, State};
+use futures_util::StreamExt;
 
 /// Бюджет обхода дерева — защита от гигантских UI.
 const NODE_BUDGET: usize = 3000;
 
 /// Сколько ждать весь поиск.
-const SEARCH_TIMEOUT: Duration = Duration::from_millis(1500);
+const SEARCH_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// Прямоугольник в координатах экрана.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,4 +199,73 @@ async fn caret_of(proxy: &atspi::proxy::accessible::AccessibleProxy<'_>) -> Opti
         }
     };
     Some(Rect { x, y, w, h })
+}
+
+/// Минимальный интервал между сигналами о фокусе (антидребезг).
+const FOCUS_DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// Слушать AT-SPI-события фокуса.
+///
+/// Сигналит в `tx`, когда **элемент** получает фокус (в том числе клик по полю
+/// внутри уже активного окна). Фильтр по `STATE_FOCUSED` здесь только грубый:
+/// что это действительно текстовое поле, проверяет вызывающий код через
+/// [`A11y::caret_rect`].
+///
+/// Требует включённой accessibility в сессии; при её отсутствии подписка
+/// не удастся, и функция просто завершится.
+pub fn spawn_focus_listener(tx: mpsc::Sender<()>) {
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                crate::log::debug(&format!("atspi-события: нет рантайма: {err}"));
+                return;
+            }
+        };
+
+        runtime.block_on(async move {
+            let connection = match AccessibilityConnection::new().await {
+                Ok(connection) => connection,
+                Err(err) => {
+                    crate::log::debug(&format!("atspi-события: нет соединения: {err}"));
+                    return;
+                }
+            };
+
+            if let Err(err) = connection.register_event::<ObjectEvents>().await {
+                crate::log::debug(&format!(
+                    "atspi-события: подписка не удалась (accessibility выключена?): {err}"
+                ));
+                return;
+            }
+            crate::log::debug("atspi-события: подписка на фокус активна");
+
+            let stream = connection.event_stream();
+            let mut events = std::pin::pin!(stream);
+            let mut last = Instant::now() - FOCUS_DEBOUNCE;
+
+            while let Some(item) = events.next().await {
+                let Ok(event) = item else {
+                    continue;
+                };
+                let Ok(state_changed) = StateChangedEvent::try_from(event) else {
+                    continue;
+                };
+                if state_changed.state != State::Focused || !state_changed.enabled {
+                    continue;
+                }
+                if last.elapsed() < FOCUS_DEBOUNCE {
+                    continue;
+                }
+                last = Instant::now();
+
+                if tx.send(()).is_err() {
+                    break;
+                }
+            }
+        });
+    });
 }
