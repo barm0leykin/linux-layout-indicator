@@ -24,6 +24,7 @@ mod presenter;
 mod renderer;
 mod screen;
 mod theme;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -216,10 +217,15 @@ fn show_badge(
     runtime: &Runtime,
     presenter: &mut Presenter,
     a11y: &mut Option<a11y::A11y>,
+    tray_state: &tray::TrayState,
     codes: &[String],
     group: u8,
     position: &mut (i16, i16),
 ) -> Result<()> {
+    if tray_state.is_paused() {
+        log::debug("показ отключён из трея");
+        return Ok(());
+    }
     if runtime.cfg.behavior.suppress_fullscreen && runtime.overlay.active_window_is_fullscreen() {
         log::debug("показ подавлен: активно полноэкранное окно");
         return Ok(());
@@ -232,6 +238,7 @@ fn show_badge(
     }
     let code = layout::code_for(group, codes);
     log::debug(&format!("показ: группа {group} -> {code}"));
+    tray_state.set_layout(&code);
     presenter.show(code);
     Ok(())
 }
@@ -292,6 +299,9 @@ fn run() -> Result<()> {
     let mut position = (0i16, 0i16);
     // AT-SPI-воркер создаётся только если он реально нужен.
     let mut a11y: Option<a11y::A11y> = None;
+    // Трей необязателен: без StatusNotifierWatcher демон работает как обычно.
+    let tray_state = tray::TrayState::new();
+    let _tray = tray::spawn(&tray_state);
     let mut layouts_refreshed = Instant::now();
 
     loop {
@@ -306,6 +316,7 @@ fn run() -> Result<()> {
                     &runtime,
                     &mut presenter,
                     &mut a11y,
+                    &tray_state,
                     &codes,
                     group,
                     &mut position,
@@ -319,6 +330,7 @@ fn run() -> Result<()> {
                             &runtime,
                             &mut presenter,
                             &mut a11y,
+                            &tray_state,
                             &codes,
                             last_group,
                             &mut position,
@@ -333,6 +345,11 @@ fn run() -> Result<()> {
             Err(RecvTimeoutError::Timeout) => {
                 runtime.maybe_reload()?;
             }
+        }
+
+        if tray_state.should_quit() {
+            log::info("выход по команде из трея");
+            break;
         }
 
         match presenter.tick() {
