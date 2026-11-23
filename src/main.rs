@@ -231,6 +231,7 @@ fn show_badge(
     presenter: &mut Presenter,
     group: u8,
     anchor_override: Option<(i16, i16)>,
+    reposition: bool,
 ) -> Result<()> {
     if ctx.tray.is_paused() {
         log::debug("показ отключён из трея");
@@ -242,8 +243,9 @@ fn show_badge(
         log::debug("показ подавлен: активно полноэкранное окно");
         return Ok(());
     }
-    if presenter.is_hidden() {
-        // Геометрию и точку привязки считаем только перед показом.
+    // Позицию пересчитываем на первом кадре и при смене окна/поля —
+    // иначе бейдж остаётся там, где было предыдущее окно.
+    if presenter.is_hidden() || reposition {
         let monitors = screen::monitors();
         let anchor = match anchor_override {
             Some(anchor) => anchor,
@@ -273,8 +275,8 @@ enum Signal {
     Layout(u8),
     /// Сменилось активное окно (для `show_on_focus`).
     Focus,
-    /// Текстовое поле получило фокус (AT-SPI, требует accessibility).
-    FieldFocus,
+    /// Текстовое поле получило фокус (AT-SPI); внутри — позиция каретки.
+    FieldFocus(a11y::Rect),
 }
 
 /// Демон: следит за раскладкой и показывает бейдж.
@@ -311,13 +313,16 @@ fn run() -> Result<()> {
         }
     });
     // Фокус элемента через AT-SPI — ловит клик по полю в уже активном окне.
-    if runtime.cfg.behavior.show_on_focus {
+    // Поднимаем всегда: при hot reload опции show_on_focus обработчик сам
+    // решит, реагировать или нет, а повторно поток уже не создать.
+    {
         let field_tx = tx.clone();
+        let deep_search = runtime.cfg.behavior.deep_search;
         thread::spawn(move || {
             let (inner_tx, inner_rx) = mpsc::channel();
-            a11y::spawn_focus_listener(inner_tx);
-            while inner_rx.recv().is_ok() {
-                if field_tx.send(Ok(Signal::FieldFocus)).is_err() {
+            a11y::spawn_focus_listener(inner_tx, deep_search);
+            while let Ok(rect) = inner_rx.recv() {
+                if field_tx.send(Ok(Signal::FieldFocus(rect))).is_err() {
                     break;
                 }
             }
@@ -350,7 +355,7 @@ fn run() -> Result<()> {
                     codes: &codes,
                     position: &mut position,
                 };
-                show_badge(&mut ctx, &mut presenter, group, None)?;
+                show_badge(&mut ctx, &mut presenter, group, None, false)?;
             }
             Ok(Ok(Signal::Focus)) => {
                 if runtime.cfg.behavior.show_on_focus {
@@ -369,7 +374,7 @@ fn run() -> Result<()> {
                             codes: &codes,
                             position: &mut position,
                         };
-                        show_badge(&mut ctx, &mut presenter, last_group, None)?;
+                        show_badge(&mut ctx, &mut presenter, last_group, None, true)?;
                     } else {
                         log::debug("фокус: текстового поля нет, показ пропущен");
                         if !strict_warned {
@@ -383,27 +388,23 @@ fn run() -> Result<()> {
                     }
                 }
             }
-            Ok(Ok(Signal::FieldFocus)) => {
+            Ok(Ok(Signal::FieldFocus(rect))) => {
                 if runtime.cfg.behavior.show_on_focus {
-                    // Событие пришло от элемента, получившего фокус. Проверяем,
-                    // что это действительно текстовое поле (есть каретка).
-                    let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
-                    if let Some(rect) = worker.caret_rect(Duration::from_millis(900)) {
-                        let anchor = if runtime.cfg.positioning == Positioning::Caret {
-                            Some((clamp_i16(rect.x), clamp_i16(rect.y)))
-                        } else {
-                            None
-                        };
-                        log::debug("фокус поля: показ раскладки");
-                        let mut ctx = BadgeContext {
-                            runtime: &runtime,
-                            a11y: &mut a11y,
-                            tray: &tray_state,
-                            codes: &codes,
-                            position: &mut position,
-                        };
-                        show_badge(&mut ctx, &mut presenter, last_group, anchor)?;
-                    }
+                    let anchor = if runtime.cfg.positioning == Positioning::Caret {
+                        Some((clamp_i16(rect.x), clamp_i16(rect.y)))
+                    } else {
+                        None
+                    };
+                    log::debug(&format!("фокус поля: каретка ({}, {})", rect.x, rect.y));
+
+                    let mut ctx = BadgeContext {
+                        runtime: &runtime,
+                        a11y: &mut a11y,
+                        tray: &tray_state,
+                        codes: &codes,
+                        position: &mut position,
+                    };
+                    show_badge(&mut ctx, &mut presenter, last_group, anchor, true)?;
                 }
             }
             Ok(Err(err)) => return Err(err),

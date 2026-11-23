@@ -182,6 +182,10 @@ pub struct Behavior {
     /// По умолчанию выключено: без a11y проверка всегда даёт «поля нет»,
     /// и показ по фокусу не работает вовсе.
     pub focus_requires_text_field: bool,
+    /// Искать каретку полным обходом дерева доступности, если быстрый путь
+    /// не дал результата. Нужно для Qt-приложений; первый раз может быть
+    /// медленным (секунды), дальше объект кэшируется по приложению.
+    pub deep_search: bool,
     /// Перечитывать конфиг при изменении файла.
     pub hot_reload: bool,
 }
@@ -192,6 +196,7 @@ impl Default for Behavior {
             suppress_fullscreen: true,
             show_on_focus: false,
             focus_requires_text_field: false,
+            deep_search: true,
             hot_reload: true,
         }
     }

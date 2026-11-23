@@ -20,6 +20,7 @@ behavior:
   suppress_fullscreen: true
   show_on_focus: false
   focus_requires_text_field: false
+  deep_search: true
   hot_reload: true
 backend:
   polling_ms: null
