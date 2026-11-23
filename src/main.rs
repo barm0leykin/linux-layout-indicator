@@ -173,7 +173,7 @@ fn resolve_anchor(runtime: &Runtime, a11y: &mut Option<a11y::A11y>) -> Result<(i
     match runtime.cfg.positioning {
         Positioning::Caret => {
             let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
-            if let Some(rect) = worker.caret_rect(Duration::from_millis(300)) {
+            if let Some(rect) = worker.caret_rect(Duration::from_millis(900)) {
                 log::debug(&format!(
                     "каретка: ({}, {}) {}x{}",
                     rect.x, rect.y, rect.w, rect.h
@@ -212,33 +212,44 @@ fn caret_probe() -> Result<()> {
     Ok(())
 }
 
+/// Общее состояние, нужное для показа бейджа.
+struct BadgeContext<'a> {
+    runtime: &'a Runtime,
+    a11y: &'a mut Option<a11y::A11y>,
+    tray: &'a tray::TrayState,
+    codes: &'a [String],
+    position: &'a mut (i16, i16),
+}
+
 /// Показать бейдж с учётом подавления и пересчёта позиции.
 fn show_badge(
-    runtime: &Runtime,
+    ctx: &mut BadgeContext<'_>,
     presenter: &mut Presenter,
-    a11y: &mut Option<a11y::A11y>,
-    tray_state: &tray::TrayState,
-    codes: &[String],
     group: u8,
-    position: &mut (i16, i16),
+    anchor_override: Option<(i16, i16)>,
 ) -> Result<()> {
-    if tray_state.is_paused() {
+    if ctx.tray.is_paused() {
         log::debug("показ отключён из трея");
         return Ok(());
     }
-    if runtime.cfg.behavior.suppress_fullscreen && runtime.overlay.active_window_is_fullscreen() {
+    if ctx.runtime.cfg.behavior.suppress_fullscreen
+        && ctx.runtime.overlay.active_window_is_fullscreen()
+    {
         log::debug("показ подавлен: активно полноэкранное окно");
         return Ok(());
     }
     if presenter.is_hidden() {
         // Геометрию и точку привязки считаем только перед показом.
         let monitors = screen::monitors();
-        let anchor = resolve_anchor(runtime, a11y)?;
-        *position = position_for(&runtime.cfg, anchor, &runtime.overlay, &monitors);
+        let anchor = match anchor_override {
+            Some(anchor) => anchor,
+            None => resolve_anchor(ctx.runtime, ctx.a11y)?,
+        };
+        *ctx.position = position_for(&ctx.runtime.cfg, anchor, &ctx.runtime.overlay, &monitors);
     }
-    let code = layout::code_for(group, codes);
+    let code = layout::code_for(group, ctx.codes);
     log::debug(&format!("показ: группа {group} -> {code}"));
-    tray_state.set_layout(&code);
+    ctx.tray.set_layout(&code);
     presenter.show(code);
     Ok(())
 }
@@ -258,6 +269,8 @@ enum Signal {
     Layout(u8),
     /// Сменилось активное окно (для `show_on_focus`).
     Focus,
+    /// Текстовое поле получило фокус (AT-SPI, требует accessibility).
+    FieldFocus,
 }
 
 /// Демон: следит за раскладкой и показывает бейдж.
@@ -293,8 +306,21 @@ fn run() -> Result<()> {
             }
         }
     });
-    drop(tx);
+    // Фокус элемента через AT-SPI — ловит клик по полю в уже активном окне.
+    if runtime.cfg.behavior.show_on_focus {
+        let field_tx = tx.clone();
+        thread::spawn(move || {
+            let (inner_tx, inner_rx) = mpsc::channel();
+            a11y::spawn_focus_listener(inner_tx);
+            while inner_rx.recv().is_ok() {
+                if field_tx.send(Ok(Signal::FieldFocus)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
 
+    drop(tx);
     let mut presenter = Presenter::new(&runtime.cfg);
     let mut position = (0i16, 0i16);
     // AT-SPI-воркер создаётся только если он реально нужен.
@@ -303,6 +329,7 @@ fn run() -> Result<()> {
     let tray_state = tray::TrayState::new();
     let _tray = tray::spawn(&tray_state);
     let mut layouts_refreshed = Instant::now();
+    let mut strict_warned = false;
 
     loop {
         match rx.recv_timeout(presenter.frame_delay()) {
@@ -312,31 +339,66 @@ fn run() -> Result<()> {
                     codes = layout::layout_codes();
                     layouts_refreshed = Instant::now();
                 }
-                show_badge(
-                    &runtime,
-                    &mut presenter,
-                    &mut a11y,
-                    &tray_state,
-                    &codes,
-                    group,
-                    &mut position,
-                )?;
+                let mut ctx = BadgeContext {
+                    runtime: &runtime,
+                    a11y: &mut a11y,
+                    tray: &tray_state,
+                    codes: &codes,
+                    position: &mut position,
+                };
+                show_badge(&mut ctx, &mut presenter, group, None)?;
             }
             Ok(Ok(Signal::Focus)) => {
                 if runtime.cfg.behavior.show_on_focus {
-                    let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
-                    if worker.caret_rect(Duration::from_millis(400)).is_some() {
-                        show_badge(
-                            &runtime,
-                            &mut presenter,
-                            &mut a11y,
-                            &tray_state,
-                            &codes,
-                            last_group,
-                            &mut position,
-                        )?;
+                    let allowed = if runtime.cfg.behavior.focus_requires_text_field {
+                        let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
+                        worker.caret_rect(Duration::from_millis(900)).is_some()
+                    } else {
+                        true
+                    };
+
+                    if allowed {
+                        let mut ctx = BadgeContext {
+                            runtime: &runtime,
+                            a11y: &mut a11y,
+                            tray: &tray_state,
+                            codes: &codes,
+                            position: &mut position,
+                        };
+                        show_badge(&mut ctx, &mut presenter, last_group, None)?;
                     } else {
                         log::debug("фокус: текстового поля нет, показ пропущен");
+                        if !strict_warned {
+                            strict_warned = true;
+                            log::info(
+                                "show_on_focus: текстовое поле не определяется. \
+                                 Скорее всего выключена accessibility — \
+                                 см. README, раздел «Позиция каретки»",
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(Ok(Signal::FieldFocus)) => {
+                if runtime.cfg.behavior.show_on_focus {
+                    // Событие пришло от элемента, получившего фокус. Проверяем,
+                    // что это действительно текстовое поле (есть каретка).
+                    let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
+                    if let Some(rect) = worker.caret_rect(Duration::from_millis(900)) {
+                        let anchor = if runtime.cfg.positioning == Positioning::Caret {
+                            Some((clamp_i16(rect.x), clamp_i16(rect.y)))
+                        } else {
+                            None
+                        };
+                        log::debug("фокус поля: показ раскладки");
+                        let mut ctx = BadgeContext {
+                            runtime: &runtime,
+                            a11y: &mut a11y,
+                            tray: &tray_state,
+                            codes: &codes,
+                            position: &mut position,
+                        };
+                        show_badge(&mut ctx, &mut presenter, last_group, anchor)?;
                     }
                 }
             }
@@ -590,7 +652,7 @@ fn doctor() -> Result<()> {
     println!("позиционирование: {:?}", cfg.positioning);
 
     let worker = a11y::A11y::spawn();
-    match worker.caret_rect(Duration::from_millis(800)) {
+    match worker.caret_rect(Duration::from_millis(900)) {
         Some(rect) => println!(
             "каретка (AT-SPI): ({}, {}) {}x{}",
             rect.x, rect.y, rect.w, rect.h

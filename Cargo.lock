@@ -553,6 +553,7 @@ dependencies = [
  "ab_glyph",
  "anyhow",
  "atspi",
+ "futures-util",
  "ksni",
  "libc",
  "serde",

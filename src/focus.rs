@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use anyhow::{Context, Result};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
-use x11rb::protocol::xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask};
+use x11rb::protocol::xproto::{AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, EventMask};
 
 /// Слушать смену активного окна. Сигнализирует в `tx` без значения.
 pub fn watch(tx: mpsc::Sender<()>) -> Result<()> {
@@ -30,10 +30,28 @@ pub fn watch(tx: mpsc::Sender<()>) -> Result<()> {
     .context("подписка на PropertyNotify корня")?;
     conn.flush().context("flush")?;
 
+    // Свойство может выставляться несколько раз за одно переключение —
+    // сигналим только когда окно действительно сменилось.
+    let mut last: Option<u32> = None;
+
     loop {
         let event = conn.wait_for_event().context("ожидание события X")?;
         if let Event::PropertyNotify(notify) = event {
-            if notify.window == root && notify.atom == active_atom && tx.send(()).is_err() {
+            if notify.window != root || notify.atom != active_atom {
+                continue;
+            }
+            let current = conn
+                .get_property(false, root, active_atom, AtomEnum::WINDOW, 0, 1)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .and_then(|reply| reply.value32().and_then(|mut it| it.next()));
+
+            if current == last {
+                continue;
+            }
+            last = current;
+
+            if tx.send(()).is_err() {
                 break;
             }
         }

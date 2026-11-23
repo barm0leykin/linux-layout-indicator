@@ -176,8 +176,12 @@ impl Default for Offset {
 pub struct Behavior {
     /// Не показывать поверх полноэкранных окон.
     pub suppress_fullscreen: bool,
-    /// Показывать раскладку при фокусе на поле ввода (FR-4, M2).
+    /// Показывать раскладку при переходе в другое окно.
     pub show_on_focus: bool,
+    /// Требовать, чтобы в окне было текстовое поле (нужна accessibility).
+    /// По умолчанию выключено: без a11y проверка всегда даёт «поля нет»,
+    /// и показ по фокусу не работает вовсе.
+    pub focus_requires_text_field: bool,
     /// Перечитывать конфиг при изменении файла.
     pub hot_reload: bool,
 }
@@ -187,6 +191,7 @@ impl Default for Behavior {
         Self {
             suppress_fullscreen: true,
             show_on_focus: false,
+            focus_requires_text_field: false,
             hot_reload: true,
         }
     }

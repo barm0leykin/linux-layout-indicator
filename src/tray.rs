@@ -10,9 +10,50 @@ use std::time::Duration;
 
 use ksni::blocking::{Handle, TrayMethods as _};
 use ksni::menu::{MenuItem, StandardItem};
-use ksni::{Category, Status, ToolTip, Tray};
+use ksni::{Category, Icon, Status, ToolTip, Tray};
+use tiny_skia::Pixmap;
 
 use crate::config::Config;
+
+/// Иконки трея: чёрный квадрат с белым глифом (из `img/ico.png`).
+const ICONS: [&[u8]; 4] = [
+    include_bytes!("../assets/icon-22.png"),
+    include_bytes!("../assets/icon-24.png"),
+    include_bytes!("../assets/icon-32.png"),
+    include_bytes!("../assets/icon-48.png"),
+];
+
+/// PNG → SNI `Icon` (ARGB32, сетевой порядок байт, без premultiply).
+fn decode_icon(png: &[u8]) -> Option<Icon> {
+    let pixmap = Pixmap::decode_png(png).ok()?;
+    let (width, height) = (pixmap.width(), pixmap.height());
+
+    let mut data = Vec::with_capacity((width * height * 4) as usize);
+    for px in pixmap.data().chunks_exact(4) {
+        // tiny-skia отдаёт premultiplied RGBA — снимаем premultiply.
+        let alpha = px[3];
+        let (r, g, b) = if alpha == 0 {
+            (0, 0, 0)
+        } else {
+            let un = |c: u8| {
+                ((u16::from(c) * 255 + u16::from(alpha) / 2) / u16::from(alpha)).min(255) as u8
+            };
+            (un(px[0]), un(px[1]), un(px[2]))
+        };
+        data.extend_from_slice(&[alpha, r, g, b]);
+    }
+
+    Some(Icon {
+        width: width as i32,
+        height: height as i32,
+        data,
+    })
+}
+
+/// Набор иконок трея.
+fn icons() -> Vec<Icon> {
+    ICONS.iter().filter_map(|png| decode_icon(png)).collect()
+}
 
 /// Состояние, которое трей и демон делят между собой.
 pub struct TrayState {
@@ -100,9 +141,13 @@ impl Tray for LayoutTray {
         Category::ApplicationStatus
     }
 
+    // Пустое имя — хост использует IconPixmap ниже.
     fn icon_name(&self) -> String {
-        // Стандартная иконка темы Breeze/Freedesktop.
-        "input-keyboard".into()
+        String::new()
+    }
+
+    fn icon_pixmap(&self) -> Vec<Icon> {
+        icons()
     }
 
     // Всегда Active: Passive в некоторых оболочках скрывает иконку.
@@ -120,8 +165,8 @@ impl Tray for LayoutTray {
             format!("Текущая раскладка: {layout}")
         };
         ToolTip {
-            icon_name: "input-keyboard".into(),
-            icon_pixmap: Vec::new(),
+            icon_name: String::new(),
+            icon_pixmap: icons(),
             title: "Layout Indicator".into(),
             description,
         }
@@ -176,7 +221,14 @@ fn open_config() {
         }
         let _ = std::fs::write(&path, Config::default_yaml());
     }
-    let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+    // stderr/stdout дочернего процесса не нужны: KDE-приложения, открывающие
+    // файл, сыплют своими предупреждениями в наш лог.
+    let _ = std::process::Command::new("xdg-open")
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 /// Запустить трей. `None` — если StatusNotifierWatcher недоступен
