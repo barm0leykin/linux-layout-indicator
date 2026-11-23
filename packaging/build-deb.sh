@@ -28,6 +28,12 @@ install -Dm644 README.md "$STAGE/usr/share/doc/layout-indicator/README.md"
 install -Dm644 config.example.yaml \
     "$STAGE/usr/share/doc/layout-indicator/config.example.yaml"
 
+# Иконки трея — в тему hicolor, чтобы Host находил их по IconName.
+for size in 22 24 32 48; do
+    install -Dm644 "assets/icon-${size}.png" \
+        "$STAGE/usr/share/icons/hicolor/${size}x${size}/apps/layout-indicator.png"
+done
+
 mkdir -p "$STAGE/DEBIAN"
 SIZE=$(du -sk "$STAGE/usr" | cut -f1)
 cat > "$STAGE/DEBIAN/control" <<EOF

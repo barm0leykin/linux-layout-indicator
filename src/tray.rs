@@ -15,12 +15,12 @@ use tiny_skia::Pixmap;
 
 use crate::config::Config;
 
-/// Иконки трея: чёрный квадрат с белым глифом (из `img/ico.png`).
-const ICONS: [&[u8]; 4] = [
-    include_bytes!("../assets/icon-22.png"),
-    include_bytes!("../assets/icon-24.png"),
-    include_bytes!("../assets/icon-32.png"),
-    include_bytes!("../assets/icon-48.png"),
+/// Иконки трея по размерам: чёрный квадрат с белым глифом (из `img/ico.png`).
+pub const ICONS: [(u32, &[u8]); 4] = [
+    (22, include_bytes!("../assets/icon-22.png")),
+    (24, include_bytes!("../assets/icon-24.png")),
+    (32, include_bytes!("../assets/icon-32.png")),
+    (48, include_bytes!("../assets/icon-48.png")),
 ];
 
 /// PNG → SNI `Icon` (ARGB32, сетевой порядок байт, без premultiply).
@@ -52,7 +52,10 @@ fn decode_icon(png: &[u8]) -> Option<Icon> {
 
 /// Набор иконок трея.
 fn icons() -> Vec<Icon> {
-    ICONS.iter().filter_map(|png| decode_icon(png)).collect()
+    ICONS
+        .iter()
+        .filter_map(|(_, png)| decode_icon(png))
+        .collect()
 }
 
 /// Состояние, которое трей и демон делят между собой.
@@ -141,9 +144,10 @@ impl Tray for LayoutTray {
         Category::ApplicationStatus
     }
 
-    // Пустое имя — хост использует IconPixmap ниже.
+    // Имя из темы иконок: Plasma 5.27 не показывает IconPixmap без IconName.
+    // Файлы ставятся командой `--install-icons` в hicolor.
     fn icon_name(&self) -> String {
-        String::new()
+        "layout-indicator".into()
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
@@ -165,7 +169,7 @@ impl Tray for LayoutTray {
             format!("Текущая раскладка: {layout}")
         };
         ToolTip {
-            icon_name: String::new(),
+            icon_name: "layout-indicator".into(),
             icon_pixmap: icons(),
             title: "Layout Indicator".into(),
             description,

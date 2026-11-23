@@ -63,6 +63,9 @@ fn main() -> Result<()> {
     if args.iter().any(|a| a == "--install-autostart") {
         return install_autostart();
     }
+    if args.iter().any(|a| a == "--install-icons") {
+        return install_icons();
+    }
 
     if args.iter().any(|a| a == "--watch") {
         return watch();
@@ -94,6 +97,7 @@ fn print_help() {
     println!("  --doctor             диагностика окружения");
     println!("  --print-config       напечатать YAML с настройками по умолчанию");
     println!("  --install-autostart  добавить автозапуск в ~/.config/autostart");
+    println!("  --install-icons      установить иконки трея в ~/.local/share/icons");
     println!("  -v, --verbose        подробный лог в stderr");
     println!("  --help, -h           эта справка");
     println!();
@@ -663,8 +667,28 @@ fn doctor() -> Result<()> {
     Ok(())
 }
 
-/// Записать `.desktop` в `~/.config/autostart`.
+/// Поставить иконки трея в hicolor-тему текущего пользователя.
+fn install_icons() -> Result<()> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .context("не удалось определить каталог данных")?
+        .join("icons/hicolor");
+
+    for (size, png) in tray::ICONS {
+        let dir = base.join(format!("{size}x{size}/apps"));
+        std::fs::create_dir_all(&dir).with_context(|| format!("создание {}", dir.display()))?;
+        std::fs::write(dir.join("layout-indicator.png"), png)
+            .with_context(|| format!("запись иконки {size}px"))?;
+    }
+
+    println!("иконки установлены в {}", base.display());
+    Ok(())
+}
+
+/// Записать `.desktop` в `~/.config/autostart` и поставить иконки трея.
 fn install_autostart() -> Result<()> {
+    install_icons()?;
     let exe = std::env::current_exe().context("не удалось определить путь к бинарнику")?;
     let dir = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
