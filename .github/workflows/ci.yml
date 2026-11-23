@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установить Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Кэш cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Тесты рендеринга загружают DejaVu Sans Bold.
+      - name: Системные зависимости
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+
+      - name: Форматирование
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Тесты
+        run: cargo test --all-targets
+
+      - name: Сборка
+        run: cargo build --release

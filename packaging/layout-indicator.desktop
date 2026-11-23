@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Layout Indicator
+Comment=Индикатор текущей раскладки клавиатуры у курсора
+Exec=layout-indicator
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+Keywords=keyboard;layout;language;раскладка;язык;
+X-GNOME-Autostart-enabled=true

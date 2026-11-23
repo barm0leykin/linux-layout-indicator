@@ -143,6 +143,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
+ "libc",
  "serde",
  "serde_yaml_ng",
  "tiny-skia",

@@ -165,6 +165,23 @@ impl X11Overlay {
         self.window
     }
 
+    /// Есть ли композитор (владелец `_NET_WM_CM_S0`). Без него нет прозрачности.
+    pub fn compositor_present(&self) -> bool {
+        let Ok(cookie) = self.conn.intern_atom(false, b"_NET_WM_CM_S0") else {
+            return false;
+        };
+        let Ok(reply) = cookie.reply() else {
+            return false;
+        };
+        let Ok(cookie) = self.conn.get_selection_owner(reply.atom) else {
+            return false;
+        };
+        let Ok(owner) = cookie.reply() else {
+            return false;
+        };
+        owner.owner != 0
+    }
+
     /// Позиция указателя в координатах корневого окна.
     pub fn pointer_position(&self) -> Result<(i16, i16)> {
         let reply = self
@@ -231,9 +248,11 @@ impl X11Overlay {
         let Ok(reply) = cookie.reply() else {
             return false;
         };
-        reply
-            .value32()
-            .map(|mut it| it.any(|atom| atom == fullscreen_atom))
-            .unwrap_or(false)
+        let atoms: Vec<u32> = reply.value32().map(|it| it.collect()).unwrap_or_default();
+        crate::log::debug(&format!(
+            "fullscreen: window=0x{window:x} atoms={atoms:?} fs_atom={fullscreen_atom} type={:?}",
+            reply.type_
+        ));
+        atoms.contains(&fullscreen_atom)
     }
 }

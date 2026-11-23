@@ -2,11 +2,35 @@
 name = "layout-indicator"
 version = "0.1.0"
 edition = "2024"
+description = "Индикатор текущей раскладки клавиатуры рядом с курсором"
+license = "MIT"
+readme = "README.md"
 
 [dependencies]
 ab_glyph = "0.2.32"
 anyhow = "1.0.105"
+libc = "0.2.191"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml_ng = "0.10.0"
 tiny-skia = "0.12.0"
 x11rb = { version = "0.14.0", features = ["shape", "xkb"] }
+
+[profile.release]
+lto = true
+strip = true
+
+# Сборка пакета: cargo install cargo-deb && cargo deb
+[package.metadata.deb]
+maintainer = "layout-indicator contributors"
+copyright = "2026, layout-indicator contributors"
+license-file = ["LICENSE", "0"]
+extended-description = """Всплывающий индикатор текущей раскладки клавиатуры рядом с курсором.
+Работает на X11, не перехватывает ввод и не требует прав root."""
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/layout-indicator", "usr/bin/", "755"],
+    ["packaging/layout-indicator.desktop", "usr/share/applications/", "644"],
+    ["README.md", "usr/share/doc/layout-indicator/README.md", "644"],
+]

@@ -21,6 +21,17 @@ pub enum Positioning {
     Window,
 }
 
+/// Как выбирать палитру.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    /// Следовать системной теме (KDE `kdeglobals`), иначе тёмная.
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
 /// Цвет в формате `#rrggbb`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -79,14 +90,16 @@ pub struct Appearance {
     pub height: u32,
     /// Радиус скругления углов, px.
     pub corner_radius: f32,
-    /// Путь к TTF/OTF-шрифту. Должен содержать нужные глифы (латиница).
+    /// Путь к TTF/OTF-шрифту.
     pub font_path: PathBuf,
     /// Размер шрифта, px.
     pub font_size: f32,
-    /// Цвет текста.
-    pub text_color: Color,
-    /// Цвет фона бейджа.
-    pub background_color: Color,
+    /// Палитра: auto/dark/light. Цвета ниже переопределяют её.
+    pub theme: ThemeMode,
+    /// Цвет текста; отсутствует — из палитры темы.
+    pub text_color: Option<Color>,
+    /// Цвет фона; отсутствует — из палитры темы.
+    pub background_color: Option<Color>,
     /// Непрозрачность фона, 0.0–1.0.
     pub background_alpha: f32,
 }
@@ -99,10 +112,22 @@ impl Default for Appearance {
             corner_radius: 8.0,
             font_path: PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
             font_size: 20.0,
-            text_color: Color::white(),
-            background_color: Color::new(0x1b, 0x1c, 0x1d),
+            theme: ThemeMode::Auto,
+            text_color: None,
+            background_color: None,
             background_alpha: 0.88,
         }
+    }
+}
+
+impl Appearance {
+    /// Итоговые цвета: явные из конфига либо из палитры темы.
+    pub fn resolved_colors(&self) -> (Color, Color) {
+        let (bg, fg) = crate::theme::palette(crate::theme::resolve(self.theme));
+        (
+            self.background_color.unwrap_or(bg),
+            self.text_color.unwrap_or(fg),
+        )
     }
 }
 
@@ -153,6 +178,8 @@ pub struct Behavior {
     pub suppress_fullscreen: bool,
     /// Показывать раскладку при фокусе на поле ввода (FR-4, M2).
     pub show_on_focus: bool,
+    /// Перечитывать конфиг при изменении файла.
+    pub hot_reload: bool,
 }
 
 impl Default for Behavior {
@@ -160,8 +187,18 @@ impl Default for Behavior {
         Self {
             suppress_fullscreen: true,
             show_on_focus: false,
+            hot_reload: true,
         }
     }
+}
+
+/// Настройки источника событий.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Backend {
+    /// Опрашивать состояние каждые N мс вместо ожидания XKB-событий.
+    /// Нужно на экзотических X-серверах, где события не приходят.
+    pub polling_ms: Option<u64>,
 }
 
 /// Полная конфигурация.
@@ -173,6 +210,7 @@ pub struct Config {
     pub timing: Timing,
     pub offset: Offset,
     pub behavior: Behavior,
+    pub backend: Backend,
 }
 
 impl Config {
@@ -192,8 +230,13 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
+        Self::load_from(&path)
+    }
+
+    /// Загрузить из конкретного файла (используется и в hot reload).
+    pub fn load_from(path: &std::path::Path) -> Result<Self> {
         let text =
-            std::fs::read_to_string(&path).with_context(|| format!("чтение {}", path.display()))?;
+            std::fs::read_to_string(path).with_context(|| format!("чтение {}", path.display()))?;
         let cfg: Self = serde_yaml_ng::from_str(&text)
             .with_context(|| format!("разбор YAML {}", path.display()))?;
         cfg.validate()?;
@@ -223,6 +266,11 @@ impl Config {
         }
         if self.timing.hold_ms == 0 && self.timing.fade_in_ms + self.timing.fade_out_ms == 0 {
             bail!("timing: индикатор не будет виден ни одного кадра");
+        }
+        if let Some(ms) = self.backend.polling_ms {
+            if ms < 20 {
+                bail!("backend.polling_ms должен быть >= 20");
+            }
         }
         Ok(())
     }
@@ -256,6 +304,7 @@ mod tests {
         assert_eq!(cfg.timing.hold_ms, 1500);
         assert_eq!(cfg.timing.fade_in_ms, 120);
         assert_eq!(cfg.appearance.height, 44);
+        assert!(cfg.behavior.hot_reload);
     }
 
     #[test]
@@ -263,5 +312,23 @@ mod tests {
         let mut cfg = Config::default();
         cfg.appearance.width = 0;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_too_fast_polling() {
+        let mut cfg = Config::default();
+        cfg.backend.polling_ms = Some(1);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn explicit_colors_override_theme() {
+        let mut cfg = Config::default();
+        cfg.appearance.background_color = Some(Color::new(1, 2, 3));
+        cfg.appearance.text_color = Some(Color::new(4, 5, 6));
+        assert_eq!(
+            cfg.appearance.resolved_colors(),
+            (Color::new(1, 2, 3), Color::new(4, 5, 6))
+        );
     }
 }
