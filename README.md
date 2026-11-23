@@ -115,11 +115,15 @@ gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
 ## Пакет .deb
 
 ```sh
-cargo install cargo-deb
-cargo deb
+packaging/build-deb.sh
 ```
 
-Метаданные пакета — в `Cargo.toml` (`[package.metadata.deb]`).
+Собирает `target/debian/layout-indicator_<версия>_<арх>.deb` — только `cargo` и `dpkg-deb`,
+никаких дополнительных инструментов. Установка: `sudo apt install ./target/debian/*.deb`.
+
+В `Cargo.toml` также есть метаданные для `cargo-deb`, если он у вас установлен.
+
+Для Arch — заготовка в [packaging/PKGBUILD](packaging/PKGBUILD) (требует публичного репозитория).
 
 ## Структура
 

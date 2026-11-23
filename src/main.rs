@@ -508,6 +508,10 @@ fn doctor() -> Result<()> {
         );
     }
 
+    if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("wayland") {
+        println!("ВНИМАНИЕ: сессия Wayland — поддержка не реализована (этап M3)");
+    }
+
     let cfg = Config::load()?;
     match Config::path() {
         Some(path) if path.exists() => println!("конфиг: {} (найден)", path.display()),
@@ -566,6 +570,7 @@ fn doctor() -> Result<()> {
         theme::resolve(cfg.appearance.theme),
         cfg.appearance.theme
     );
+    println!("позиционирование: {:?}", cfg.positioning);
 
     let worker = a11y::A11y::spawn();
     match worker.caret_rect(Duration::from_millis(800)) {

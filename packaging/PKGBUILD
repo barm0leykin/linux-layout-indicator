@@ -1,0 +1,48 @@
+# Maintainer: layout-indicator contributors
+#
+# ЧЕРНОВИК для AUR.
+# Для публикации нужен публичный git-репозиторий: заполните url и source.
+# Пока репозитория нет, файл можно использовать для локальной проверки
+# упаковки: скопировать в чистый каталог вместе с исходниками и запустить
+# `makepkg -si` (потребуются cargo и rust).
+
+pkgname=layout-indicator
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Индикатор текущей раскладки клавиатуры у курсора"
+arch=('x86_64')
+url="https://example.invalid/layout-indicator"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+makedepends=('cargo' 'rust')
+options=('!lto')   # LTO уже включён в Cargo.toml
+install=layout-indicator.install
+
+# TODO: заменить на реальный архив, когда появится репозиторий.
+# source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+# sha256sums=('SKIP')
+source=()
+sha256sums=()
+
+# Для локальной сборки из каталога с исходниками.
+_srcdir="$startdir/../.."
+
+build() {
+    cd "$_srcdir"
+    cargo build --release --locked
+}
+
+package() {
+    cd "$_srcdir"
+
+    install -Dm755 target/release/layout-indicator \
+        "$pkgdir/usr/bin/layout-indicator"
+    install -Dm644 packaging/layout-indicator.desktop \
+        "$pkgdir/usr/share/applications/layout-indicator.desktop"
+    install -Dm644 LICENSE \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 config.example.yaml \
+        "$pkgdir/usr/share/doc/$pkgname/config.example.yaml"
+}
