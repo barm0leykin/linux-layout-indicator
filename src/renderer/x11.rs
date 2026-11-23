@@ -182,6 +182,29 @@ impl X11Overlay {
         owner.owner != 0
     }
 
+    /// Геометрия активного окна в координатах корневого окна: (x, y, w, h).
+    pub fn active_window_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        let cookie = self.conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").ok()?;
+        let atom = cookie.reply().ok()?.atom;
+        let reply = self
+            .conn
+            .get_property(false, self.root, atom, AtomEnum::WINDOW, 0, 1)
+            .ok()?
+            .reply()
+            .ok()?;
+        let window = reply.value32().and_then(|mut it| it.next())?;
+        if window == 0 {
+            return None;
+        }
+        let geometry = self.conn.get_geometry(window).ok()?.reply().ok()?;
+        Some((
+            i32::from(geometry.x),
+            i32::from(geometry.y),
+            i32::from(geometry.width),
+            i32::from(geometry.height),
+        ))
+    }
+
     /// Позиция указателя в координатах корневого окна.
     pub fn pointer_position(&self) -> Result<(i16, i16)> {
         let reply = self

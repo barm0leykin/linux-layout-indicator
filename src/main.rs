@@ -13,8 +13,10 @@
 // Часть конфигурации относится к ещё не реализованным режимам (caret/window, show_on_focus).
 #![allow(dead_code)]
 
+mod a11y;
 mod backend;
 mod config;
+mod focus;
 mod instance;
 mod layout;
 mod log;
@@ -32,7 +34,7 @@ use anyhow::{Context, Result};
 
 use backend::Backend;
 use backend::x11::X11Backend;
-use config::Config;
+use config::{Config, Positioning};
 use instance::InstanceGuard;
 use presenter::Presenter;
 use renderer::x11::X11Overlay;
@@ -64,6 +66,9 @@ fn main() -> Result<()> {
     if args.iter().any(|a| a == "--watch") {
         return watch();
     }
+    if args.iter().any(|a| a == "--caret-probe") {
+        return caret_probe();
+    }
     if let Some(text) = arg_value(&args, "--demo") {
         return demo(&text);
     }
@@ -84,6 +89,7 @@ fn print_help() {
     println!("  (без опций)          запустить демон");
     println!("  --demo <TEXT>        показать бейдж один раз, например --demo EN");
     println!("  --watch              печатать смену раскладки (отладка)");
+    println!("  --caret-probe        попробовать получить позицию каретки через AT-SPI");
     println!("  --doctor             диагностика окружения");
     println!("  --print-config       напечатать YAML с настройками по умолчанию");
     println!("  --install-autostart  добавить автозапуск в ~/.config/autostart");
@@ -161,6 +167,75 @@ fn config_mtime() -> Option<SystemTime> {
     std::fs::metadata(Config::path()?).ok()?.modified().ok()
 }
 
+/// Точка привязки бейджа: каретка → активное окно → курсор мыши.
+fn resolve_anchor(runtime: &Runtime, a11y: &mut Option<a11y::A11y>) -> Result<(i16, i16)> {
+    match runtime.cfg.positioning {
+        Positioning::Caret => {
+            let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
+            if let Some(rect) = worker.caret_rect(Duration::from_millis(300)) {
+                log::debug(&format!(
+                    "каретка: ({}, {}) {}x{}",
+                    rect.x, rect.y, rect.w, rect.h
+                ));
+                return Ok((clamp_i16(rect.x), clamp_i16(rect.y)));
+            }
+            log::debug("каретка недоступна — откат к курсору мыши");
+        }
+        Positioning::Window => {
+            if let Some((x, y, w, _h)) = runtime.overlay.active_window_rect() {
+                return Ok((clamp_i16(x + w), clamp_i16(y)));
+            }
+            log::debug("активное окно неизвестно — откат к курсору мыши");
+        }
+        Positioning::Pointer => {}
+    }
+    runtime.overlay.pointer_position()
+}
+
+fn clamp_i16(value: i32) -> i16 {
+    value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
+/// Проверка получения позиции каретки (`--caret-probe`).
+fn caret_probe() -> Result<()> {
+    // Диагностический режим — всегда подробно.
+    log::init(true);
+    let worker = a11y::A11y::spawn();
+    match worker.caret_rect(Duration::from_secs(2)) {
+        Some(rect) => println!("каретка: ({}, {}) {}x{}", rect.x, rect.y, rect.w, rect.h),
+        None => println!(
+            "каретка недоступна: a11y выключена, нет текстового поля \
+             или приложение не перезапущено после включения a11y"
+        ),
+    }
+    Ok(())
+}
+
+/// Показать бейдж с учётом подавления и пересчёта позиции.
+fn show_badge(
+    runtime: &Runtime,
+    presenter: &mut Presenter,
+    a11y: &mut Option<a11y::A11y>,
+    codes: &[String],
+    group: u8,
+    position: &mut (i16, i16),
+) -> Result<()> {
+    if runtime.cfg.behavior.suppress_fullscreen && runtime.overlay.active_window_is_fullscreen() {
+        log::debug("показ подавлен: активно полноэкранное окно");
+        return Ok(());
+    }
+    if presenter.is_hidden() {
+        // Геометрию и точку привязки считаем только перед показом.
+        let monitors = screen::monitors();
+        let anchor = resolve_anchor(runtime, a11y)?;
+        *position = position_for(&runtime.cfg, anchor, &runtime.overlay, &monitors);
+    }
+    let code = layout::code_for(group, codes);
+    log::debug(&format!("показ: группа {group} -> {code}"));
+    presenter.show(code);
+    Ok(())
+}
+
 /// Подстроить конфигурацию под окружение.
 fn apply_environment(cfg: &mut Config, overlay: &X11Overlay) {
     // Без композитора альфа-канал не смешивается — рисуем непрозрачно.
@@ -170,42 +245,87 @@ fn apply_environment(cfg: &mut Config, overlay: &X11Overlay) {
     }
 }
 
+/// События, приходящие в главный цикл.
+enum Signal {
+    /// Сменилась раскладка (новый индекс группы).
+    Layout(u8),
+    /// Сменилось активное окно (для `show_on_focus`).
+    Focus,
+}
+
 /// Демон: следит за раскладкой и показывает бейдж.
 fn run() -> Result<()> {
     let mut runtime = Runtime::new()?;
     let mut codes = layout::layout_codes();
     log::info(&format!("раскладки: {codes:?}"));
 
+    // Текущая группа нужна и для показа по фокусу окна.
+    let mut last_group = X11Backend::new()
+        .and_then(|backend| backend.current_group())
+        .unwrap_or(0);
+
     let polling_ms = runtime.cfg.backend.polling_ms;
-    let (tx, rx) = mpsc::channel::<Result<u8>>();
-    thread::spawn(move || backend_thread(tx, polling_ms));
+    let (tx, rx) = mpsc::channel::<Result<Signal>>();
+
+    // События смены раскладки.
+    let layout_tx = tx.clone();
+    thread::spawn(move || backend_thread(layout_tx, polling_ms));
+
+    // Смена активного окна — только для показа по фокусу.
+    let focus_tx = tx.clone();
+    thread::spawn(move || {
+        let (inner_tx, inner_rx) = mpsc::channel();
+        thread::spawn(move || {
+            if let Err(err) = focus::watch(inner_tx) {
+                log::debug(&format!("слежение за фокусом остановлено: {err}"));
+            }
+        });
+        while inner_rx.recv().is_ok() {
+            if focus_tx.send(Ok(Signal::Focus)).is_err() {
+                break;
+            }
+        }
+    });
+    drop(tx);
 
     let mut presenter = Presenter::new(&runtime.cfg);
     let mut position = (0i16, 0i16);
+    // AT-SPI-воркер создаётся только если он реально нужен.
+    let mut a11y: Option<a11y::A11y> = None;
     let mut layouts_refreshed = Instant::now();
 
     loop {
         match rx.recv_timeout(presenter.frame_delay()) {
-            Ok(Ok(group)) => {
+            Ok(Ok(Signal::Layout(group))) => {
+                last_group = group;
                 if layouts_refreshed.elapsed() > LAYOUTS_REFRESH {
                     codes = layout::layout_codes();
                     layouts_refreshed = Instant::now();
                 }
-
-                let suppressed = runtime.cfg.behavior.suppress_fullscreen
-                    && runtime.overlay.active_window_is_fullscreen();
-                if suppressed {
-                    log::debug("показ подавлен: активно полноэкранное окно");
-                } else {
-                    if presenter.is_hidden() {
-                        // Геометрию перечитываем только перед показом.
-                        let monitors = screen::monitors();
-                        let anchor = runtime.overlay.pointer_position()?;
-                        position = position_for(&runtime.cfg, anchor, &runtime.overlay, &monitors);
+                show_badge(
+                    &runtime,
+                    &mut presenter,
+                    &mut a11y,
+                    &codes,
+                    group,
+                    &mut position,
+                )?;
+            }
+            Ok(Ok(Signal::Focus)) => {
+                if runtime.cfg.behavior.show_on_focus {
+                    let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
+                    if worker.caret_rect(Duration::from_millis(400)).is_some() {
+                        show_badge(
+                            &runtime,
+                            &mut presenter,
+                            &mut a11y,
+                            &codes,
+                            last_group,
+                            &mut position,
+                        )?;
+                    } else {
+                        log::debug("фокус: текстового поля нет, показ пропущен");
                     }
-                    let code = layout::code_for(group, &codes);
-                    log::debug(&format!("раскладка {group} -> {code}"));
-                    presenter.show(code);
                 }
             }
             Ok(Err(err)) => return Err(err),
@@ -230,7 +350,7 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn backend_thread(tx: mpsc::Sender<Result<u8>>, polling_ms: Option<u64>) {
+fn backend_thread(tx: mpsc::Sender<Result<Signal>>, polling_ms: Option<u64>) {
     let mut backend = match X11Backend::new() {
         Ok(backend) => backend,
         Err(err) => {
@@ -249,7 +369,7 @@ fn backend_thread(tx: mpsc::Sender<Result<u8>>, polling_ms: Option<u64>) {
                 Ok(group) => {
                     if Some(group) != last {
                         last = Some(group);
-                        if tx.send(Ok(group)).is_err() {
+                        if tx.send(Ok(Signal::Layout(group))).is_err() {
                             break;
                         }
                     }
@@ -266,7 +386,7 @@ fn backend_thread(tx: mpsc::Sender<Result<u8>>, polling_ms: Option<u64>) {
     loop {
         match backend.next_change() {
             Ok(group) => {
-                if tx.send(Ok(group)).is_err() {
+                if tx.send(Ok(Signal::Layout(group))).is_err() {
                     break;
                 }
             }
@@ -446,6 +566,15 @@ fn doctor() -> Result<()> {
         theme::resolve(cfg.appearance.theme),
         cfg.appearance.theme
     );
+
+    let worker = a11y::A11y::spawn();
+    match worker.caret_rect(Duration::from_millis(800)) {
+        Some(rect) => println!(
+            "каретка (AT-SPI): ({}, {}) {}x{}",
+            rect.x, rect.y, rect.w, rect.h
+        ),
+        None => println!("каретка (AT-SPI): недоступна"),
+    }
 
     Ok(())
 }
