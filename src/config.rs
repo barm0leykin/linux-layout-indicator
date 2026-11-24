@@ -225,6 +225,8 @@ impl Default for Behavior {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Backend {
+    /// Откуда брать раскладку: `auto` — KDE D-Bus, иначе XKB.
+    pub kind: crate::backend::BackendKind,
     /// Опрашивать состояние каждые N мс вместо ожидания XKB-событий.
     /// Нужно на экзотических X-серверах, где события не приходят.
     pub polling_ms: Option<u64>,

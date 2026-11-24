@@ -2,9 +2,43 @@
 //!
 //! Реализации: X11 (M1), KWin/Wayland (M3), Windows/macOS (M5, бэклог).
 
+pub mod kde;
 pub mod x11;
 
 use anyhow::Result;
+
+/// Какой источник раскладки использовать.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendKind {
+    /// KDE D-Bus, если доступен, иначе XKB.
+    #[default]
+    Auto,
+    /// Только `org.kde.KeyboardLayouts` (KDE X11 и Wayland).
+    Kde,
+    /// Только XKB-события (прочие X11).
+    Xkb,
+}
+
+/// Открыть бэкенд по настройке.
+pub fn open(kind: BackendKind) -> Result<Box<dyn Backend>> {
+    match kind {
+        BackendKind::Kde => Ok(Box::new(kde::KdeBackend::new()?)),
+        BackendKind::Xkb => Ok(Box::new(x11::X11Backend::new()?)),
+        BackendKind::Auto => match kde::KdeBackend::new() {
+            Ok(backend) => Ok(Box::new(backend)),
+            Err(err) => {
+                crate::log::debug(&format!("KDE-бэкенд недоступен: {err}"));
+                Ok(Box::new(x11::X11Backend::new()?))
+            }
+        },
+    }
+}
+
+/// Коды раскладок: сначала спрашиваем KDE, иначе — из конфигурации XKB.
+pub fn layout_codes() -> Vec<String> {
+    kde::layout_codes().unwrap_or_else(crate::layout::layout_codes)
+}
 
 /// Смена раскладки: новый индекс группы.
 ///

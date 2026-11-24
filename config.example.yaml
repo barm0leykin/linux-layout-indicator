@@ -25,4 +25,5 @@ behavior:
   deep_search: true
   hot_reload: true
 backend:
+  kind: auto
   polling_ms: null

@@ -561,6 +561,7 @@ dependencies = [
  "tiny-skia",
  "tokio",
  "x11rb",
+ "zbus",
 ]
 
 [[package]]

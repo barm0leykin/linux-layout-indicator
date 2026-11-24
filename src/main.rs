@@ -34,8 +34,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 
-use backend::Backend;
-use backend::x11::X11Backend;
+use backend::BackendKind;
 use config::{Config, Positioning};
 use instance::InstanceGuard;
 use presenter::Presenter;
@@ -312,20 +311,21 @@ enum Signal {
 /// Демон: следит за раскладкой и показывает бейдж.
 fn run() -> Result<()> {
     let mut runtime = Runtime::new()?;
-    let mut codes = layout::layout_codes();
+    let mut codes = backend::layout_codes();
     log::info(&format!("раскладки: {codes:?}"));
 
     // Текущая группа нужна и для показа по фокусу окна.
-    let mut last_group = X11Backend::new()
+    let mut last_group = backend::open(BackendKind::Auto)
         .and_then(|backend| backend.current_group())
         .unwrap_or(0);
 
     let polling_ms = runtime.cfg.backend.polling_ms;
+    let backend_kind = runtime.cfg.backend.kind;
     let (tx, rx) = mpsc::channel::<Result<Signal>>();
 
     // События смены раскладки.
     let layout_tx = tx.clone();
-    thread::spawn(move || backend_thread(layout_tx, polling_ms));
+    thread::spawn(move || backend_thread(layout_tx, backend_kind, polling_ms));
 
     // Смена активного окна — только для показа по фокусу.
     let focus_tx = tx.clone();
@@ -487,8 +487,8 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn backend_thread(tx: mpsc::Sender<Result<Signal>>, polling_ms: Option<u64>) {
-    let mut backend = match X11Backend::new() {
+fn backend_thread(tx: mpsc::Sender<Result<Signal>>, kind: BackendKind, polling_ms: Option<u64>) {
+    let mut backend = match backend::open(kind) {
         Ok(backend) => backend,
         Err(err) => {
             let _ = tx.send(Err(err));
@@ -573,7 +573,7 @@ fn demo(text: &str) -> Result<()> {
 
 /// Отладочный режим: печатает каждое переключение раскладки.
 fn watch() -> Result<()> {
-    let mut backend = X11Backend::new()?;
+    let mut backend = backend::open(BackendKind::Auto)?;
     let codes = layout::layout_codes();
 
     println!("раскладки: {:?}", codes);
@@ -694,7 +694,7 @@ fn doctor() -> Result<()> {
         Err(err) => println!("X11: ОШИБКА — {err}"),
     }
 
-    match X11Backend::new() {
+    match backend::open(BackendKind::Auto) {
         Ok(backend) => match backend.current_group() {
             Ok(group) => println!("XKB: ок, текущая группа {group}"),
             Err(err) => println!("XKB: ошибка чтения группы — {err}"),
