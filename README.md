@@ -81,6 +81,19 @@ backend:
 
 ## Позиция каретки (AT-SPI)
 
+> ⚠️ **Внимание.** Включение accessibility — системная настройка, влияющая на все
+> приложения. На проверенной системе (Ubuntu 22.04, KDE Plasma 5.24, Qt 5.15)
+> после включения `IsEnabled=true` **Qt-приложения падали с SIGSEGV**
+> (Kate, Notepadqq; отчёты в `/var/crash`). Включайте осознанно и выключайте,
+> если приложения начали падать:
+>
+> ```sh
+> gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+>   --method org.freedesktop.DBus.Properties.Set org.a11y.Status IsEnabled "<false>"
+> ```
+>
+> Утилита **сама accessibility не включает** — только использует, если она уже включена.
+
 `positioning: caret` — бейдж появляется у текстовой каретки, а не у мыши.
 
 Требования:
