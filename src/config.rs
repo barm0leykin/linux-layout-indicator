@@ -12,10 +12,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Positioning {
-    /// У курсора мыши — работает всегда (T0).
+    /// Автоматически: каретка из AT-SPI-событий → точка клика → курсор мыши.
     #[default]
+    Auto,
+    /// У курсора мыши — работает всегда (T0).
     Pointer,
-    /// У текстовой каретки (T2). Требует включённой accessibility в сессии.
+    /// В точке последнего левого клика (XInput2, без accessibility).
+    Click,
+    /// У текстовой каретки (T2). Требует включённой accessibility.
     Caret,
     /// У активного окна (T1).
     Window,

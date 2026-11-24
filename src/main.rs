@@ -15,6 +15,7 @@
 
 mod a11y;
 mod backend;
+mod click;
 mod config;
 mod focus;
 mod instance;
@@ -173,9 +174,28 @@ fn config_mtime() -> Option<SystemTime> {
 }
 
 /// Точка привязки бейджа: каретка → активное окно → курсор мыши.
-fn resolve_anchor(runtime: &Runtime, a11y: &mut Option<a11y::A11y>) -> Result<(i16, i16)> {
-    match runtime.cfg.positioning {
-        Positioning::Caret => {
+/// Точка привязки бейджа. Цепочка зависит от режима:
+/// * `auto`    — каретка из AT-SPI-событий → клик → мышь (без обхода дерева);
+/// * `caret`   — запрос каретки (может быть дорогим) → мышь;
+/// * `click`   — последний клик → мышь;
+/// * `window`  — угол активного окна → мышь;
+/// * `pointer` — всегда мышь.
+fn resolve_anchor(
+    runtime: &Runtime,
+    a11y: &mut Option<a11y::A11y>,
+    click: &click::ClickState,
+    last_caret: Option<(i16, i16)>,
+) -> Result<(i16, i16)> {
+    use Positioning::*;
+
+    let mode = runtime.cfg.positioning;
+
+    if matches!(mode, Auto | Caret) {
+        if let Some(position) = last_caret {
+            log::debug(&format!("каретка (из события): {position:?}"));
+            return Ok(position);
+        }
+        if mode == Caret {
             let worker = a11y.get_or_insert_with(a11y::A11y::spawn);
             if let Some(rect) = worker.caret_rect(Duration::from_millis(900)) {
                 log::debug(&format!(
@@ -186,14 +206,22 @@ fn resolve_anchor(runtime: &Runtime, a11y: &mut Option<a11y::A11y>) -> Result<(i
             }
             log::debug("каретка недоступна — откат к курсору мыши");
         }
-        Positioning::Window => {
-            if let Some((x, y, w, _h)) = runtime.overlay.active_window_rect() {
-                return Ok((clamp_i16(x + w), clamp_i16(y)));
-            }
-            log::debug("активное окно неизвестно — откат к курсору мыши");
-        }
-        Positioning::Pointer => {}
     }
+
+    if matches!(mode, Auto | Click) {
+        if let Some(position) = click.recent() {
+            log::debug(&format!("точка клика: {position:?}"));
+            return Ok(position);
+        }
+    }
+
+    if mode == Window {
+        if let Some((x, y, w, _h)) = runtime.overlay.active_window_rect() {
+            return Ok((clamp_i16(x + w), clamp_i16(y)));
+        }
+        log::debug("активное окно неизвестно — откат к курсору мыши");
+    }
+
     runtime.overlay.pointer_position()
 }
 
@@ -223,6 +251,8 @@ struct BadgeContext<'a> {
     tray: &'a tray::TrayState,
     codes: &'a [String],
     position: &'a mut (i16, i16),
+    click: &'a click::ClickState,
+    last_caret: Option<(i16, i16)>,
 }
 
 /// Показать бейдж с учётом подавления и пересчёта позиции.
@@ -249,7 +279,7 @@ fn show_badge(
         let monitors = screen::monitors();
         let anchor = match anchor_override {
             Some(anchor) => anchor,
-            None => resolve_anchor(ctx.runtime, ctx.a11y)?,
+            None => resolve_anchor(ctx.runtime, ctx.a11y, ctx.click, ctx.last_caret)?,
         };
         *ctx.position = position_for(&ctx.runtime.cfg, anchor, &ctx.runtime.overlay, &monitors);
     }
@@ -334,6 +364,18 @@ fn run() -> Result<()> {
     let mut position = (0i16, 0i16);
     // AT-SPI-воркер создаётся только если он реально нужен.
     let mut a11y: Option<a11y::A11y> = None;
+    // Точка последнего клика — «простой» движок позиционирования.
+    let click_state = click::ClickState::new();
+    {
+        let state = std::sync::Arc::clone(&click_state);
+        thread::spawn(move || {
+            if let Err(err) = click::watch(state) {
+                log::debug(&format!("слежение за кликами остановлено: {err}"));
+            }
+        });
+    }
+    // Последняя известная каретка (из AT-SPI-событий) — для режима auto.
+    let mut last_caret: Option<(i16, i16)> = None;
     // Трей необязателен: без StatusNotifierWatcher демон работает как обычно.
     let tray_state = tray::TrayState::new();
     let _tray = tray::spawn(&tray_state);
@@ -354,6 +396,8 @@ fn run() -> Result<()> {
                     tray: &tray_state,
                     codes: &codes,
                     position: &mut position,
+                    click: click_state.as_ref(),
+                    last_caret,
                 };
                 show_badge(&mut ctx, &mut presenter, group, None, false)?;
             }
@@ -373,6 +417,8 @@ fn run() -> Result<()> {
                             tray: &tray_state,
                             codes: &codes,
                             position: &mut position,
+                            click: click_state.as_ref(),
+                            last_caret,
                         };
                         show_badge(&mut ctx, &mut presenter, last_group, None, true)?;
                     } else {
@@ -390,8 +436,13 @@ fn run() -> Result<()> {
             }
             Ok(Ok(Signal::FieldFocus(rect))) => {
                 if runtime.cfg.behavior.show_on_focus {
-                    let anchor = if runtime.cfg.positioning == Positioning::Caret {
-                        Some((clamp_i16(rect.x), clamp_i16(rect.y)))
+                    let caret = (clamp_i16(rect.x), clamp_i16(rect.y));
+                    last_caret = Some(caret);
+                    let anchor = if matches!(
+                        runtime.cfg.positioning,
+                        Positioning::Caret | Positioning::Auto
+                    ) {
+                        Some(caret)
                     } else {
                         None
                     };
@@ -403,6 +454,8 @@ fn run() -> Result<()> {
                         tray: &tray_state,
                         codes: &codes,
                         position: &mut position,
+                        click: click_state.as_ref(),
+                        last_caret,
                     };
                     show_badge(&mut ctx, &mut presenter, last_group, anchor, true)?;
                 }
