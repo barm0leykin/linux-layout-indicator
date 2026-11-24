@@ -8,6 +8,8 @@ appearance:
   theme: auto
   text_color: null
   background_color: null
+  border_color: null
+  border_width: 1.0
   background_alpha: 0.88
 timing:
   fade_in_ms: 120

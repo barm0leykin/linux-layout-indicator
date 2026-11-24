@@ -11,7 +11,7 @@ pub mod x11;
 
 use ab_glyph::{Font, FontVec, Glyph, PxScale, ScaleFont, point};
 use anyhow::{Context, Result};
-use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
+use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::config::{Appearance, Color};
 
@@ -56,6 +56,21 @@ pub fn render_badge(
         Transform::identity(),
         None,
     );
+
+    // Рамка поверх фона — для контраста на любом фоне рабочего стола.
+    let (border, border_width) = app.resolved_border();
+    if border_width > 0.0 {
+        let mut border_paint = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        border_paint.set_color(sk_color(border, 1.0));
+        let stroke = Stroke {
+            width: border_width,
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(&path, &border_paint, &stroke, Transform::identity(), None);
+    }
 
     for layer in layers {
         if layer.alpha > 0.0 {
@@ -201,6 +216,44 @@ mod tests {
         let empty = render_badge(&app, &font(), &[], 1.0).expect("пиксмап");
         let faded = render_badge(&app, &font(), &[Layer::new("RU", 0.0)], 1.0).expect("пиксмап");
         assert_eq!(empty.data(), faded.data());
+    }
+
+    #[test]
+    fn border_is_drawn_with_configured_color() {
+        let mut app = Appearance {
+            width: 60,
+            height: 30,
+            ..Default::default()
+        };
+        app.background_alpha = 1.0;
+        app.border_color = Some(Color::new(0xff, 0x00, 0x00));
+        app.border_width = 2.0;
+
+        let pixmap = render_badge(&app, &font(), &[], 1.0).expect("пиксмап");
+        let has_red = pixmap
+            .data()
+            .chunks_exact(4)
+            .any(|px| px[0] > 150 && px[1] < 100 && px[2] < 100);
+        assert!(has_red, "рамка заданного цвета не отрисована");
+    }
+
+    #[test]
+    fn zero_border_width_draws_nothing_red() {
+        let mut app = Appearance {
+            width: 60,
+            height: 30,
+            ..Default::default()
+        };
+        app.background_alpha = 1.0;
+        app.border_color = Some(Color::new(0xff, 0x00, 0x00));
+        app.border_width = 0.0;
+
+        let pixmap = render_badge(&app, &font(), &[], 1.0).expect("пиксмап");
+        let has_red = pixmap
+            .data()
+            .chunks_exact(4)
+            .any(|px| px[0] > 150 && px[1] < 100 && px[2] < 100);
+        assert!(!has_red, "при нулевой толщине рамки быть не должно");
     }
 
     #[test]

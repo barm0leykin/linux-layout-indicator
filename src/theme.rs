@@ -13,11 +13,19 @@ pub enum Theme {
     Light,
 }
 
-/// Цвета бейджа по умолчанию для темы.
-pub fn palette(theme: Theme) -> (Color, Color) {
+/// Цвета бейджа по умолчанию для темы: (фон, текст, рамка).
+pub fn palette(theme: Theme) -> (Color, Color, Color) {
     match theme {
-        Theme::Dark => (Color::new(0x1b, 0x1c, 0x1d), Color::new(0xff, 0xff, 0xff)),
-        Theme::Light => (Color::new(0xfc, 0xfc, 0xfc), Color::new(0x1b, 0x1c, 0x1d)),
+        Theme::Dark => (
+            Color::new(0x1b, 0x1c, 0x1d),
+            Color::new(0xff, 0xff, 0xff),
+            Color::new(0x6a, 0x6e, 0x72),
+        ),
+        Theme::Light => (
+            Color::new(0xfc, 0xfc, 0xfc),
+            Color::new(0x1b, 0x1c, 0x1d),
+            Color::new(0x9a, 0x9e, 0xa2),
+        ),
     }
 }
 

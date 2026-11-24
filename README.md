@@ -58,6 +58,8 @@ appearance:
   theme: auto            # auto | dark | light
   text_color: null       # null — из палитры темы, иначе '#ffffff'
   background_color: null # null — из палитры темы
+  border_color: null     # null — из палитры темы (рамка для контраста)
+  border_width: 1.0      # px, 0 — без рамки
   background_alpha: 0.88
 timing:
   fade_in_ms: 120

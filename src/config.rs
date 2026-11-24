@@ -104,6 +104,10 @@ pub struct Appearance {
     pub text_color: Option<Color>,
     /// Цвет фона; отсутствует — из палитры темы.
     pub background_color: Option<Color>,
+    /// Цвет рамки; отсутствует — из палитры темы.
+    pub border_color: Option<Color>,
+    /// Толщина рамки в px (0 — без рамки).
+    pub border_width: f32,
     /// Непрозрачность фона, 0.0–1.0.
     pub background_alpha: f32,
 }
@@ -119,6 +123,8 @@ impl Default for Appearance {
             theme: ThemeMode::Auto,
             text_color: None,
             background_color: None,
+            border_color: None,
+            border_width: 1.0,
             background_alpha: 0.88,
         }
     }
@@ -127,10 +133,19 @@ impl Default for Appearance {
 impl Appearance {
     /// Итоговые цвета: явные из конфига либо из палитры темы.
     pub fn resolved_colors(&self) -> (Color, Color) {
-        let (bg, fg) = crate::theme::palette(crate::theme::resolve(self.theme));
+        let (bg, fg, _) = crate::theme::palette(crate::theme::resolve(self.theme));
         (
             self.background_color.unwrap_or(bg),
             self.text_color.unwrap_or(fg),
+        )
+    }
+
+    /// Итоговая рамка: (цвет, толщина).
+    pub fn resolved_border(&self) -> (Color, f32) {
+        let (_, _, border) = crate::theme::palette(crate::theme::resolve(self.theme));
+        (
+            self.border_color.unwrap_or(border),
+            self.border_width.max(0.0),
         )
     }
 }
@@ -268,6 +283,9 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&a.background_alpha) {
             bail!("appearance.background_alpha должен быть в диапазоне 0.0..=1.0");
+        }
+        if !(0.0..=16.0).contains(&a.border_width) {
+            bail!("appearance.border_width должен быть в диапазоне 0..=16");
         }
         if a.font_size <= 0.0 || a.font_size > 512.0 {
             bail!("appearance.font_size должен быть в диапазоне (0, 512]");
